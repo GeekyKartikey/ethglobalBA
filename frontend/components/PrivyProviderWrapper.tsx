@@ -24,7 +24,7 @@ export default function PrivyProviderWrapper({ children }: Props) {
 
         // Make sure embedded wallets are auto–created
         embeddedWallets: {
-          createOnLogin: "users-without-wallets",
+          ethereum: { createOnLogin: "users-without-wallets" },
         },
 
         appearance: {

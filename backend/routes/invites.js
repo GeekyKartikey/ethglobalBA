@@ -4,6 +4,33 @@ const express = require("express");
 const router = express.Router();
 const { groups, invites, groupMembers } = require("../store/memoryStore");
 
+// POST /invites
+router.post("/", (req, res) => {
+  const { groupId, userId, walletAddress } = req.body || {};
+  if (!groupId || !userId) {
+    return res.status(400).json({ error: "groupId and userId are required" });
+  }
+  const group = groups[groupId];
+  if (!group) return res.status(404).json({ error: "Group not found" });
+
+  const members = groupMembers[groupId] || new Set();
+  if (!members.has(userId)) {
+    return res.status(403).json({ error: "Not a member of this group" });
+  }
+
+  const code = `inv_${Math.random().toString(36).slice(2, 8)}`;
+  invites[code] = {
+    code,
+    groupId,
+    status: "pending",
+    createdAt: new Date().toISOString(),
+    createdBy: userId,
+    walletAddress: walletAddress || null,
+  };
+
+  res.json({ code, walletAddress: walletAddress || null });
+});
+
 // GET /invites/:code
 router.get("/:code", (req, res) => {
   const invite = invites[req.params.code];
@@ -14,6 +41,7 @@ router.get("/:code", (req, res) => {
   res.json({
     groupName: group?.name || "Unknown group",
     status: invite.status,
+    walletAddress: invite.walletAddress || null,
   });
 });
 
