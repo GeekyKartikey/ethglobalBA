@@ -293,6 +293,27 @@ router.get("/:groupId/x402/status", (req, res) => {
   });
 });
 
+// PATCH /groups/:groupId/rent-due-day
+router.patch("/:groupId/rent-due-day", (req, res) => {
+  const { groupId } = req.params;
+  const { userId, rentDueDay } = req.body || {};
+
+  if (!userId) return res.status(400).json({ error: "userId is required" });
+  const group = groups[groupId];
+  if (!group) return res.status(404).json({ error: "Group not found" });
+  if (!userIsInGroup(groupId, userId)) {
+    return res.status(403).json({ error: "User is not a member of this group" });
+  }
+
+  const day = Number(rentDueDay);
+  if (Number.isNaN(day) || day < 1 || day > 28) {
+    return res.status(400).json({ error: "rentDueDay must be between 1 and 28" });
+  }
+
+  group.rentDueDay = day;
+  res.json({ ok: true, rentDueDay: day });
+});
+
 // POST /groups/:groupId/x402/initiate
 router.post("/:groupId/x402/initiate", (req, res) => {
   const { groupId } = req.params;

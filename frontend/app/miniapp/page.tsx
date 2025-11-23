@@ -30,6 +30,7 @@ type Group = {
   totalRent: number;
   token: string;
   collectorAddress: string;
+  rentDueDay?: number;
 };
 
 type GroupMember = {
@@ -63,6 +64,19 @@ type GroupSummary = {
   xmtp: GroupXmtp | null;
 };
 
+type InvitePreview = {
+  groupId: string | null;
+  groupName: string;
+  totalRent: number | null;
+  token: string | null;
+  collectorAddress: string | null;
+  rentDueDay: number | null;
+  status: string;
+  walletAddress: string | null;
+  memberCount: number;
+  members: GroupMember[];
+};
+
 export default function MiniappPage() {
   const { ready: privyReady, authenticated, user, login, logout } = usePrivy();
   const { wallets } = useWallets();
@@ -78,6 +92,7 @@ export default function MiniappPage() {
   const [newGroupName, setNewGroupName] = useState("");
   const [newGroupRent, setNewGroupRent] = useState("");
   const [newGroupCollector, setNewGroupCollector] = useState("");
+  const [newGroupDueDay, setNewGroupDueDay] = useState("1");
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [summary, setSummary] = useState<GroupSummary | null>(null);
   const [loadingSummary, setLoadingSummary] = useState(false);
@@ -92,6 +107,9 @@ export default function MiniappPage() {
     | "pending"
   >("unknown");
   const [loadingAutopay, setLoadingAutopay] = useState(false);
+  const [autopayDay, setAutopayDay] = useState("");
+  const [savingAutopayDay, setSavingAutopayDay] = useState(false);
+  const [autopayDayMessage, setAutopayDayMessage] = useState<string | null>(null);
   const [funding, setFunding] = useState(false);
   const [fundingAvailable, setFundingAvailable] = useState(true);
   const [fundingError, setFundingError] = useState<string | null>(null);
@@ -112,6 +130,9 @@ export default function MiniappPage() {
   const [joinCode, setJoinCode] = useState("");
   const [joining, setJoining] = useState(false);
   const [joinResult, setJoinResult] = useState<string | null>(null);
+  const [joinPreview, setJoinPreview] = useState<InvitePreview | null>(null);
+  const [loadingJoinPreview, setLoadingJoinPreview] = useState(false);
+  const [joinPreviewError, setJoinPreviewError] = useState<string | null>(null);
   const [walletBalance, setWalletBalance] = useState<string | null>(null);
   const [walletBalanceChain, setWalletBalanceChain] = useState<string | null>(
     null
@@ -193,6 +214,12 @@ export default function MiniappPage() {
       return;
     }
 
+    const dueDay = newGroupDueDay ? Number(newGroupDueDay) : 1;
+    if (Number.isNaN(dueDay) || dueDay < 1 || dueDay > 28) {
+      alert("Autopay day must be between 1 and 28");
+      return;
+    }
+
     const collectorAddress = newGroupCollector.trim();
     if (!collectorAddress) {
       alert("Collector address is missing");
@@ -211,6 +238,7 @@ export default function MiniappPage() {
           totalRent,
           token: "USDC",
           collectorAddress,
+          rentDueDay: dueDay,
         }),
       });
 
@@ -231,6 +259,7 @@ export default function MiniappPage() {
       setNewGroupName("");
       setNewGroupRent("");
       setNewGroupCollector("");
+      setNewGroupDueDay("1");
     } catch (e) {
       console.error("Error creating group", e);
       alert("Error creating group");
@@ -246,6 +275,8 @@ export default function MiniappPage() {
     setSummary(null);
     setAutopayEnabled(false);
     setAutopayStatus("unknown");
+    setAutopayDay("");
+    setAutopayDayMessage(null);
     setXmtpStatus(null);
     setXmtpDelivery(null);
 
@@ -263,6 +294,9 @@ export default function MiniappPage() {
       }
 
       setSummary(json);
+      if (json?.group?.rentDueDay) {
+        setAutopayDay(String(json.group.rentDueDay));
+      }
       loadAutopayStatus(groupId);
       loadXmtpStatus(groupId);
     } catch (e) {
@@ -334,6 +368,43 @@ export default function MiniappPage() {
       setAutopayStatus("failed");
     } finally {
       setLoadingAutopay(false);
+    }
+  }
+
+  async function handleSaveAutopayDay() {
+    if (!selectedGroupId || !userId) return;
+    const dayNum = Number(autopayDay);
+    if (Number.isNaN(dayNum) || dayNum < 1 || dayNum > 28) {
+      alert("Autopay date must be between 1 and 28 (day of month).");
+      return;
+    }
+    setSavingAutopayDay(true);
+    setAutopayDayMessage(null);
+    try {
+      const res = await fetch(
+        `${BACKEND_URL}/groups/${selectedGroupId}/rent-due-day`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userId, rentDueDay: dayNum }),
+        }
+      );
+      const json = await parseJsonResponse(res);
+      if (!res.ok) {
+        throw new Error(json?.error || "Failed to save autopay date");
+      }
+      setAutopayDay(String(json.rentDueDay || dayNum));
+      setAutopayDayMessage("Autopay date saved");
+      setSummary((prev) =>
+        prev
+          ? { ...prev, group: { ...prev.group, rentDueDay: json.rentDueDay || dayNum } }
+          : prev
+      );
+    } catch (err) {
+      console.error("Autopay day save error", err);
+      alert(err instanceof Error ? err.message : "Failed to save autopay date");
+    } finally {
+      setSavingAutopayDay(false);
     }
   }
 
@@ -551,6 +622,33 @@ export default function MiniappPage() {
       alert(err instanceof Error ? err.message : "Failed to invite");
     } finally {
       setInviting(false);
+    }
+  }
+
+  async function handlePreviewInvite() {
+    if (!joinCode.trim()) {
+      alert("Enter invite code to preview");
+      return;
+    }
+    setLoadingJoinPreview(true);
+    setJoinPreview(null);
+    setJoinPreviewError(null);
+    try {
+      const res = await fetch(
+        `${BACKEND_URL}/invites/${encodeURIComponent(joinCode.trim())}`
+      );
+      const json = await parseJsonResponse(res);
+      if (!res.ok) {
+        throw new Error(json?.error || "Unable to preview invite");
+      }
+      setJoinPreview(json as InvitePreview);
+    } catch (err) {
+      console.error("Preview invite error", err);
+      const message = err instanceof Error ? err.message : "Failed to preview invite";
+      setJoinPreviewError(message);
+      alert(message);
+    } finally {
+      setLoadingJoinPreview(false);
     }
   }
 
@@ -858,6 +956,13 @@ export default function MiniappPage() {
                             {formatAddress(summary.group.collectorAddress)}
                           </span>
                         </p>
+                        <p className="text-[11px] text-slate-500">
+                          Autopay runs on day{" "}
+                          <span className="font-medium">
+                            {summary.group.rentDueDay ?? 1}
+                          </span>{" "}
+                          of each month.
+                        </p>
                       </div>
 
                       <div className="bg-white border border-slate-200 rounded-lg px-3 py-2">
@@ -883,11 +988,40 @@ export default function MiniappPage() {
                         {!autopayEnabled && autopayStatus && autopayStatus !== "unknown" && (
                           <p className="text-[11px] text-slate-500">Status: {autopayStatus}</p>
                         )}
+                        <div className="grid sm:grid-cols-[1fr,auto] gap-2 items-end">
+                          <div className="space-y-1">
+                            <label className="text-[11px] text-slate-600">Autopay date (day of month)</label>
+                            <input
+                              type="number"
+                              min={1}
+                              max={28}
+                              value={autopayDay}
+                              onChange={(e) => {
+                                setAutopayDay(e.target.value);
+                                setAutopayDayMessage(null);
+                              }}
+                              className="w-full border rounded-lg px-2 py-1.5 text-[11px] focus:outline-none focus:ring-1 focus:ring-indigo-500 text-black"
+                            />
+                            <p className="text-[10px] text-slate-500">
+                              Autopay runs on day {summary.group.rentDueDay ?? "1"} each month unless you change it here.
+                            </p>
+                          </div>
+                          <button
+                            onClick={handleSaveAutopayDay}
+                            disabled={savingAutopayDay || !autopayDay}
+                            className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs px-3 py-2 rounded-lg disabled:opacity-60"
+                          >
+                            {savingAutopayDay ? "Saving..." : "Save date"}
+                          </button>
+                        </div>
+                        {autopayDayMessage && (
+                          <p className="text-[11px] text-emerald-700">{autopayDayMessage}</p>
+                        )}
                         {!autopayEnabled && (
                           <button
                             onClick={handleEnableAutopay}
                             disabled={loadingAutopay}
-                            className="mt-1 bg-blue-600 hover:bg-blue-700 text-white text-xs px-3 py-1.5 rounded-lg disabled:opacity-60"
+                            className="bg-blue-600 hover:bg-blue-700 text-white text-xs px-3 py-1.5 rounded-lg disabled:opacity-60"
                           >
                             {loadingAutopay ? "Enabling..." : "Enable Autopay"}
                           </button>
@@ -1168,6 +1302,15 @@ export default function MiniappPage() {
                   className="w-full border rounded-lg px-2 py-1.5 text-sm text-black focus:outline-none focus:ring-1 focus:ring-indigo-500"
                 />
                 <input
+                  type="number"
+                  min={1}
+                  max={28}
+                  placeholder="Autopay day of month (1-28)"
+                  value={newGroupDueDay}
+                  onChange={(e) => setNewGroupDueDay(e.target.value)}
+                  className="w-full border rounded-lg px-2 py-1.5 text-sm text-black focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                />
+                <input
                   type="text"
                   placeholder="Collector wallet (enter wallet address)"
                   value={newGroupCollector}
@@ -1191,14 +1334,25 @@ export default function MiniappPage() {
               <p className="text-[11px] text-slate-500">
                 Paste an invite code shared by a member to join their group.
               </p>
-              <div className="grid grid-cols-[2fr,auto] gap-2">
+              <div className="grid grid-cols-[2fr,auto,auto] gap-2 items-center">
                 <input
                   type="text"
                   placeholder="Invite code"
                   value={joinCode}
-                  onChange={(e) => setJoinCode(e.target.value)}
+                  onChange={(e) => {
+                    setJoinCode(e.target.value);
+                    setJoinPreview(null);
+                    setJoinPreviewError(null);
+                  }}
                   className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500"
                 />
+                <button
+                  onClick={handlePreviewInvite}
+                  disabled={loadingJoinPreview}
+                  className="px-4 py-2 rounded-lg bg-slate-200 text-slate-800 text-sm font-semibold disabled:opacity-60"
+                >
+                  {loadingJoinPreview ? "Loading..." : "Preview"}
+                </button>
                 <button
                   onClick={handleJoinGroup}
                   disabled={joining}
@@ -1209,6 +1363,74 @@ export default function MiniappPage() {
               </div>
               {joinResult && (
                 <p className="text-[11px] text-slate-600">{joinResult}</p>
+              )}
+              {joinPreviewError && (
+                <p className="text-[11px] text-red-600">{joinPreviewError}</p>
+              )}
+              {joinPreview && (
+                <div className="border rounded-xl p-3 bg-white space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-[11px] uppercase text-slate-500">Group</p>
+                      <p className="text-sm font-semibold text-slate-800">
+                        {joinPreview.groupName}
+                      </p>
+                      <p className="text-[11px] text-slate-500">
+                        Rent: {joinPreview.totalRent || "--"} {joinPreview.token || ""}
+                      </p>
+                      <p className="text-[11px] text-slate-500">
+                        Autopay date: day {joinPreview.rentDueDay || "1"} each month
+                      </p>
+                      <p className="text-[11px] text-slate-500">
+                        Collector:{" "}
+                        <span className="font-mono text-[10px]">
+                          {formatAddress(joinPreview.collectorAddress)}
+                        </span>
+                      </p>
+                    </div>
+                    <span className="text-[11px] px-2 py-1 rounded-full border bg-slate-100 text-slate-700">
+                      Invite status: {joinPreview.status}
+                    </span>
+                  </div>
+                  <div>
+                    <p className="text-[11px] text-slate-500 mb-1">
+                      Members who will be in this group
+                    </p>
+                    {joinPreview.members.length === 0 ? (
+                      <p className="text-[11px] text-slate-400">No members yet.</p>
+                    ) : (
+                      <ul className="space-y-1 text-[11px]">
+                        {joinPreview.members.map((m) => (
+                          <li
+                            key={m.userId}
+                            className="flex items-center justify-between bg-slate-50 border border-slate-200 rounded px-2 py-1"
+                          >
+                            <div>
+                              <p className="font-medium text-slate-800">{m.email || m.userId}</p>
+                              <p className="font-mono text-[10px] text-slate-500 truncate max-w-[160px]">
+                                {m.walletAddress || "No wallet"}
+                              </p>
+                            </div>
+                            <span
+                              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] ${
+                                m.hasAutopay
+                                  ? "bg-emerald-100 text-emerald-700"
+                                  : "bg-slate-200 text-slate-700"
+                              }`}
+                            >
+                              <span
+                                className={`w-1.5 h-1.5 rounded-full ${
+                                  m.hasAutopay ? "bg-emerald-500" : "bg-slate-500"
+                                }`}
+                              />
+                              {m.hasAutopay ? "Autopay on" : "Autopay off"}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                </div>
               )}
             </div>
           )}

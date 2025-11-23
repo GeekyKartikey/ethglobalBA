@@ -2,7 +2,27 @@
 
 const express = require("express");
 const router = express.Router();
-const { groups, invites, groupMembers } = require("../store/memoryStore");
+const {
+  groups,
+  invites,
+  groupMembers,
+  users,
+  x402Authorizations,
+} = require("../store/memoryStore");
+
+function buildMemberSummaries(groupId) {
+  const memberIds = Array.from(groupMembers[groupId] || []);
+  return memberIds.map((uid) => {
+    const user = users[uid];
+    const hasAutopay = !!x402Authorizations[`${groupId}:${uid}`];
+    return {
+      userId: uid,
+      email: user?.email || null,
+      walletAddress: user?.walletAddress || null,
+      hasAutopay,
+    };
+  });
+}
 
 // POST /invites
 router.post("/", (req, res) => {
@@ -37,11 +57,19 @@ router.get("/:code", (req, res) => {
   if (!invite) return res.status(404).json({ error: "Invite not found" });
 
   const group = groups[invite.groupId];
+  const members = group ? buildMemberSummaries(invite.groupId) : [];
 
   res.json({
+    groupId: invite.groupId,
     groupName: group?.name || "Unknown group",
+    totalRent: group?.totalRent || null,
+    token: group?.token || null,
+    collectorAddress: group?.collectorAddress || null,
+    rentDueDay: group?.rentDueDay || null,
     status: invite.status,
     walletAddress: invite.walletAddress || null,
+    memberCount: members.length,
+    members,
   });
 });
 
