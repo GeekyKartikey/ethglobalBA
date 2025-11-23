@@ -10,9 +10,15 @@ type Props = {
 export default function PrivyProviderWrapper({ children }: Props) {
   const appId = process.env.NEXT_PUBLIC_PRIVY_APP_ID;
 
-  if (!appId) {
-    console.error("Missing NEXT_PUBLIC_PRIVY_APP_ID environment variable");
-    // Fallback: render children without Privy so the app doesn't crash
+  const isClient = typeof window !== "undefined";
+  const isValidAppId = appId && appId.startsWith("app_");
+
+  if (!isClient || !isValidAppId) {
+    if (!isValidAppId) {
+      console.warn(
+        "Privy disabled: NEXT_PUBLIC_PRIVY_APP_ID is missing or invalid. Rendering without Privy."
+      );
+    }
     return <>{children}</>;
   }
 
