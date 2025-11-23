@@ -31,6 +31,7 @@ type Group = {
   token: string;
   collectorAddress: string;
   rentDueDay?: number;
+  createdBy?: string;
 };
 
 type GroupMember = {
@@ -55,6 +56,15 @@ type XmtpDelivery = {
   failed?: { address?: string; error?: string; reason?: string }[];
   unreachable?: string[];
   skipped?: { reason: string }[];
+};
+
+type XmtpLogEntry = {
+  id: string;
+  type: string;
+  text: string;
+  actor?: string | null;
+  payload?: Record<string, unknown> | null;
+  createdAt: string;
 };
 
 type GroupSummary = {
@@ -146,6 +156,11 @@ export default function MiniappPage() {
   const [xmtpMessage, setXmtpMessage] = useState("");
   const [sendingXmtp, setSendingXmtp] = useState(false);
   const [xmtpDelivery, setXmtpDelivery] = useState<XmtpDelivery | null>(null);
+  const [xmtpFeed, setXmtpFeed] = useState<XmtpLogEntry[]>([]);
+  const [loadingXmtpFeed, setLoadingXmtpFeed] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [showGroupActions, setShowGroupActions] = useState(false);
+  const [leavingGroup, setLeavingGroup] = useState(false);
 
   useEffect(() => {
     if (!privyReady || !authenticated) return;
@@ -279,6 +294,7 @@ export default function MiniappPage() {
     setAutopayDayMessage(null);
     setXmtpStatus(null);
     setXmtpDelivery(null);
+    setXmtpFeed([]);
 
     try {
       const res = await fetch(
@@ -299,6 +315,7 @@ export default function MiniappPage() {
       }
       loadAutopayStatus(groupId);
       loadXmtpStatus(groupId);
+      loadXmtpLog(groupId, userId);
     } catch (e) {
       console.error("Error fetching summary", e);
     } finally {
@@ -340,6 +357,24 @@ export default function MiniappPage() {
       console.error("Error loading XMTP status", err);
     } finally {
       setLoadingXmtpStatus(false);
+    }
+  }
+
+  async function loadXmtpLog(groupId: string, userId?: string | null) {
+    if (!groupId) return;
+    setLoadingXmtpFeed(true);
+    try {
+      const url = new URL(`${BACKEND_URL}/groups/${groupId}/xmtp/log`);
+      if (userId) url.searchParams.set("userId", userId);
+      const res = await fetch(url.toString());
+      const data = await parseJsonResponse(res);
+      if (res.ok) {
+        setXmtpFeed(Array.isArray(data.messages) ? data.messages : []);
+      }
+    } catch (err) {
+      console.error("Error loading XMTP feed", err);
+    } finally {
+      setLoadingXmtpFeed(false);
     }
   }
 
@@ -489,6 +524,7 @@ export default function MiniappPage() {
           body: JSON.stringify({
             dueDate: reminderDate || null,
             note: reminderNote || null,
+            userId,
           }),
         }
       );
@@ -501,6 +537,7 @@ export default function MiniappPage() {
       );
       setXmtpStatus(json.xmtp || null);
       setXmtpDelivery(json.delivery || null);
+      loadXmtpLog(selectedGroupId, userId);
       setReminderNote("");
     } catch (err) {
       console.error("Reminder send error", err);
@@ -539,6 +576,7 @@ export default function MiniappPage() {
         prev ? { ...prev, xmtp: json.xmtp || prev.xmtp } : prev
       );
       setXmtpDelivery(json.delivery || null);
+      loadXmtpLog(selectedGroupId, userId);
       setXmtpMessage("");
     } catch (err) {
       console.error("Custom XMTP send error", err);
@@ -581,6 +619,7 @@ export default function MiniappPage() {
       );
       setXmtpStatus(json.xmtp || null);
       setXmtpDelivery(json.delivery || null);
+      loadXmtpLog(selectedGroupId, userId);
       setPaymentStatusText("");
       setPaymentAmount("");
     } catch (err) {
@@ -622,6 +661,36 @@ export default function MiniappPage() {
       alert(err instanceof Error ? err.message : "Failed to invite");
     } finally {
       setInviting(false);
+    }
+  }
+
+  async function handleLeaveGroup() {
+    if (!selectedGroupId || !userId) return;
+    setLeavingGroup(true);
+    try {
+      const res = await fetch(`${BACKEND_URL}/groups/${selectedGroupId}/leave`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId }),
+      });
+      const json = await parseJsonResponse(res);
+      if (!res.ok) {
+        throw new Error(json?.error || "Failed to leave group");
+      }
+      setSelectedGroupId(null);
+      setSummary(null);
+      setShowSettings(false);
+      setXmtpFeed([]);
+      const groupsRes = await fetch(
+        `${BACKEND_URL}/groups?userId=${encodeURIComponent(userId)}`
+      );
+      const groupsJson = await parseJsonResponse(groupsRes);
+      setGroups(groupsJson);
+    } catch (err) {
+      console.error("Leave group error", err);
+      alert(err instanceof Error ? err.message : "Failed to leave group");
+    } finally {
+      setLeavingGroup(false);
     }
   }
 
@@ -713,38 +782,32 @@ export default function MiniappPage() {
 
   // ---------- UI ----------
 
-  if (!privyReady) {
-    return (
-      <main className="min-h-screen flex items-center justify-center">
-        <p>Initializing miniapp...</p>
-      </main>
-    );
-  }
+  const isBooting = !privyReady || loading || !userId;
 
-  if (!authenticated) {
-    return (
-      <main className="min-h-screen flex items-center justify-center">
-        <button
-          onClick={login}
-          className="px-4 py-2 rounded bg-black text-white text-sm"
-        >
-          Login with Privy
-        </button>
-      </main>
-    );
-  }
-
-  if (loading || !userId) {
-    return (
-      <main className="min-h-screen flex items-center justify-center">
-        <p>Connecting to backend...</p>
-      </main>
-    );
-  }
+  const isOwner = summary?.group?.createdBy === userId;
 
   return (
     <main className="min-h-screen bg-slate-100 flex items-center justify-center p-4">
-      <div className="w-full max-w-3xl flex flex-col gap-4">
+      <div className="w-full max-w-3xl flex flex-col gap-4 relative">
+        {(!privyReady || isBooting || !authenticated) && (
+          <div className="absolute inset-0 z-30 bg-white/80 backdrop-blur-sm rounded-2xl border border-slate-200 flex items-center justify-center">
+            {!privyReady ? (
+              <div className="text-sm text-slate-700 font-semibold">Initializing...</div>
+            ) : !authenticated ? (
+              <div className="flex flex-col items-center gap-3">
+                <p className="text-sm text-slate-700">Please sign in to continue</p>
+                <button
+                  onClick={login}
+                  className="px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700"
+                >
+                  Login with Privy
+                </button>
+              </div>
+            ) : (
+              <div className="text-sm text-slate-700 font-semibold">Connecting...</div>
+            )}
+          </div>
+        )}
         {/* TOP BAR - profile */}
         <div className="w-full flex justify-end px-4 py-3 border-b bg-white sticky top-0 z-10 shadow rounded-2xl relative">
           <div className="flex items-center gap-3">
@@ -885,16 +948,44 @@ export default function MiniappPage() {
           {viewMode === "my" && (
             <div className="grid md:grid-cols-[280px,1fr] gap-4">
               <div className="space-y-4">
-                <section className="space-y-2">
+                <section className="space-y-2 relative">
                   <div className="flex items-center justify-between">
-                    <h2 className="text-sm font-semibold text-slate-800">
-                      Your Groups
-                    </h2>
+                    <h2 className="text-sm font-semibold text-slate-800">Your Groups</h2>
+                    <div className="relative">
+                      <button
+                        type="button"
+                        onClick={() => setShowGroupActions((v) => !v)}
+                        className="w-8 h-8 rounded-full bg-indigo-600 text-white flex items-center justify-center text-lg leading-none shadow hover:bg-indigo-700"
+                        aria-label="Create or join group"
+                      >
+                        +
+                      </button>
+                      {showGroupActions && (
+                        <div className="absolute right-0 mt-2 w-36 bg-white border border-slate-200 rounded-lg shadow-lg p-2 space-y-2 z-10">
+                          <button
+                            onClick={() => {
+                              setViewMode("create");
+                              setShowGroupActions(false);
+                            }}
+                            className="w-full text-left text-xs px-3 py-2 rounded-md hover:bg-slate-100"
+                          >
+                            Create group
+                          </button>
+                          <button
+                            onClick={() => {
+                              setViewMode("join");
+                              setShowGroupActions(false);
+                            }}
+                            className="w-full text-left text-xs px-3 py-2 rounded-md hover:bg-slate-100"
+                          >
+                            Join group
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   </div>
                   {groups.length === 0 ? (
-                    <p className="text-xs text-slate-500">
-                      You are not in any groups yet. Create one below.
-                    </p>
+                    <p className="text-xs text-slate-500">You are not in any groups yet. Use the + button to create or join.</p>
                   ) : (
                     <ul className="space-y-1 text-xs">
                       {groups.map((g) => {
@@ -910,12 +1001,11 @@ export default function MiniappPage() {
                                   : "border-slate-200 bg-slate-50 hover:bg-slate-100"
                               }`}
                             >
-                              <span className="font-medium text-slate-800">
-                                {g.name}
-                              </span>
-                              <span className="text-[11px] text-slate-600">
-                                {g.totalRent} {g.token}
-                              </span>
+                              <div>
+                                <p className="font-medium text-slate-800">{g.name}</p>
+                                <p className="text-[10px] text-slate-500">Rent: {g.totalRent} {g.token}</p>
+                              </div>
+                              <span className="text-[11px] text-slate-600">Day {g.rentDueDay ?? 1}</span>
                             </button>
                           </li>
                         );
@@ -928,52 +1018,61 @@ export default function MiniappPage() {
               <div className="space-y-3">
                 <section className="h-full border rounded-xl px-3 py-3 bg-slate-50">
                   {!selectedGroupId && (
-                    <p className="text-xs text-slate-500">
-                      Select a group to view details, autopay, XMTP updates, and members.
-                    </p>
+                    <p className="text-xs text-slate-500">Select a group to view details, autopay, XMTP updates, and members.</p>
                   )}
 
-                  {loadingSummary && (
-                    <p className="text-xs text-slate-500">Loading group details...</p>
-                  )}
+                  {loadingSummary && <p className="text-xs text-slate-500">Loading group details...</p>}
 
                   {summary && !loadingSummary && (
                     <div className="space-y-3">
-                      <div>
-                        <p className="text-[11px] uppercase text-slate-500">Group</p>
-                        <p className="text-sm font-semibold text-slate-900">
-                          {summary.group.name}
-                        </p>
-                        <p className="text-[11px] text-slate-500 mt-1">
-                          Total rent:{" "}
-                          <span className="font-medium">
-                            {summary.group.totalRent} {summary.group.token}
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-[11px] uppercase text-slate-500">Group</p>
+                          <p className="text-sm font-semibold text-slate-900">{summary.group.name}</p>
+                          <p className="text-[11px] text-slate-500 mt-1">
+                            Total rent: <span className="font-medium">{summary.group.totalRent} {summary.group.token}</span>
+                          </p>
+                          <p className="text-[11px] text-slate-500">Collector: <span className="font-mono">{formatAddress(summary.group.collectorAddress)}</span></p>
+                          <p className="text-[11px] text-slate-500">Rent day: <span className="font-medium">{summary.group.rentDueDay ?? 1}</span> of each month.</p>
+                        </div>
+                        <div className="flex items-start gap-2">
+                          <span
+                            className={`text-[11px] px-2 py-1 rounded-full border ${
+                              (xmtpStatus || summary.xmtp)?.conversationId
+                                ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                                : "bg-slate-100 text-slate-600 border-slate-200"
+                            }`}
+                          >
+                            {(xmtpStatus || summary.xmtp)?.conversationId ? "Thread live" : "Starts on first send"}
                           </span>
-                        </p>
-                        <p className="text-[11px] text-slate-500">
-                          Collector:{" "}
-                          <span className="font-mono">
-                            {formatAddress(summary.group.collectorAddress)}
-                          </span>
-                        </p>
-                        <p className="text-[11px] text-slate-500">
-                          Autopay runs on day{" "}
-                          <span className="font-medium">
-                            {summary.group.rentDueDay ?? 1}
-                          </span>{" "}
-                          of each month.
-                        </p>
+                          <button
+                            onClick={() => setShowSettings(true)}
+                            className="w-9 h-9 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 text-slate-700 text-sm font-semibold"
+                            aria-label="Group settings"
+                          >
+                            ??
+                          </button>
+                        </div>
                       </div>
 
                       <div className="bg-white border border-slate-200 rounded-lg px-3 py-2">
                         <p className="text-[11px] text-slate-500 mb-1">Your share</p>
-                        <p className="text-lg font-semibold text-indigo-600">
-                          {summary.yourShare ?? "--"} {summary.group.token}
-                        </p>
+                        <p className="text-lg font-semibold text-indigo-600">{summary.yourShare ?? "--"} {summary.group.token}</p>
                       </div>
 
                       <section className="border rounded-xl p-4 bg-gray-50 shadow-sm space-y-2">
-                        <h3 className="text-sm font-semibold">Autopay</h3>
+                        <div className="flex items-center justify-between">
+                          <h3 className="text-sm font-semibold">Autopay</h3>
+                          {!autopayEnabled && (
+                            <button
+                              onClick={handleEnableAutopay}
+                              disabled={loadingAutopay}
+                              className="bg-blue-600 hover:bg-blue-700 text-white text-xs px-3 py-1.5 rounded-lg disabled:opacity-60"
+                            >
+                              {loadingAutopay ? "Enabling..." : "Enable Autopay"}
+                            </button>
+                          )}
+                        </div>
                         <p className="text-xs text-gray-700">
                           {autopayEnabled
                             ? "Autopay is enabled for your wallet."
@@ -1000,272 +1099,100 @@ export default function MiniappPage() {
                                 setAutopayDay(e.target.value);
                                 setAutopayDayMessage(null);
                               }}
-                              className="w-full border rounded-lg px-2 py-1.5 text-[11px] focus:outline-none focus:ring-1 focus:ring-indigo-500 text-black"
+                              disabled={!isOwner}
+                              className="w-full border rounded-lg px-2 py-1.5 text-[11px] focus:outline-none focus:ring-1 focus:ring-indigo-500 text-black disabled:bg-slate-100"
                             />
                             <p className="text-[10px] text-slate-500">
-                              Autopay runs on day {summary.group.rentDueDay ?? "1"} each month unless you change it here.
+                              Set by the owner. Autopay runs on day {summary.group.rentDueDay ?? "1"} each month.
                             </p>
                           </div>
                           <button
                             onClick={handleSaveAutopayDay}
-                            disabled={savingAutopayDay || !autopayDay}
+                            disabled={savingAutopayDay || !autopayDay || !isOwner}
                             className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs px-3 py-2 rounded-lg disabled:opacity-60"
                           >
                             {savingAutopayDay ? "Saving..." : "Save date"}
                           </button>
                         </div>
-                        {autopayDayMessage && (
-                          <p className="text-[11px] text-emerald-700">{autopayDayMessage}</p>
-                        )}
-                        {!autopayEnabled && (
-                          <button
-                            onClick={handleEnableAutopay}
-                            disabled={loadingAutopay}
-                            className="bg-blue-600 hover:bg-blue-700 text-white text-xs px-3 py-1.5 rounded-lg disabled:opacity-60"
-                          >
-                            {loadingAutopay ? "Enabling..." : "Enable Autopay"}
-                          </button>
-                        )}
+                        {autopayDayMessage && <p className="text-[11px] text-emerald-700">{autopayDayMessage}</p>}
                       </section>
 
                       <section className="border rounded-xl p-4 bg-white shadow-sm space-y-3">
                         <div className="flex items-center justify-between">
                           <div>
-                            <h3 className="text-sm font-semibold text-slate-800">
-                              XMTP updates
-                            </h3>
-                            <p className="text-[11px] text-slate-500">
-                              Broadcast reminders and payment status updates to member wallets via XMTP.
-                            </p>
+                            <h3 className="text-sm font-semibold text-slate-800">XMTP updates</h3>
+                            <p className="text-[11px] text-slate-500">System notifications only; no member chatting.</p>
                           </div>
-                          <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => selectedGroupId && loadXmtpStatus(selectedGroupId)}
+                            disabled={loadingXmtpStatus}
+                            className="text-[11px] px-3 py-1.5 rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-100 disabled:opacity-60"
+                          >
+                            {loadingXmtpStatus ? "Refreshing..." : "Refresh"}
+                          </button>
+                        </div>
+
+                        <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-[11px] space-y-1">
+                          <p className="text-slate-500">Conversation ID</p>
+                          <p className="font-mono text-[10px] break-all">
+                            {(xmtpStatus || summary.xmtp)?.conversationId || "Created on first send"}
+                          </p>
+                          <p className="text-slate-500">
+                            Last send: {(xmtpStatus || summary.xmtp)?.lastSentAt
+                              ? new Date((xmtpStatus || summary.xmtp)?.lastSentAt as string).toLocaleString()
+                              : "Not yet sent"}
+                          </p>
+                          <p className="text-slate-500">Recipients: {(xmtpStatus || summary.xmtp)?.members?.length || 0}</p>
+                        </div>
+
+                        <div className="border border-slate-200 rounded-lg bg-slate-50 p-3">
+                          <div className="flex items-center justify-between mb-2">
+                            <h4 className="text-xs font-semibold text-slate-700">Updates feed</h4>
                             <button
-                              onClick={() => selectedGroupId && loadXmtpStatus(selectedGroupId)}
-                              disabled={loadingXmtpStatus}
-                              className="text-[11px] px-3 py-1.5 rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-100 disabled:opacity-60"
+                              onClick={() => selectedGroupId && loadXmtpLog(selectedGroupId, userId)}
+                              disabled={loadingXmtpFeed}
+                              className="text-[11px] px-2 py-1 rounded-md border border-slate-200 hover:bg-slate-100 disabled:opacity-60"
                             >
-                              {loadingXmtpStatus ? "Refreshing..." : "Refresh"}
+                              {loadingXmtpFeed ? "Loading..." : "Reload"}
                             </button>
-                            <span
-                              className={`text-[11px] px-2 py-1 rounded-full border ${
-                                (xmtpStatus || summary.xmtp)?.conversationId
-                                  ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                                  : "bg-slate-100 text-slate-600 border-slate-200"
-                              }`}
-                            >
-                              {(xmtpStatus || summary.xmtp)?.conversationId
-                                ? "Thread live"
-                                : "Will start on first send"}
-                            </span>
                           </div>
-                        </div>
-
-                        <div className="grid sm:grid-cols-2 gap-3">
-                          <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-[11px] space-y-1">
-                            <p className="text-slate-500">Conversation ID</p>
-                            <p className="font-mono text-[10px] break-all">
-                              {(xmtpStatus || summary.xmtp)?.conversationId ||
-                                "Created when the first message is sent"}
-                            </p>
-                            <p className="text-slate-500">
-                              Last send:{" "}
-                              {(xmtpStatus || summary.xmtp)?.lastSentAt
-                                ? new Date(
-                                    (xmtpStatus || summary.xmtp)?.lastSentAt as string
-                                  ).toLocaleString()
-                                : "Not yet sent"}
-                            </p>
-                            <p className="text-slate-500">
-                              Recipients: {(xmtpStatus || summary.xmtp)?.members?.length || 0}
-                            </p>
-                            {(xmtpStatus || summary.xmtp)?.lastMessage && (
-                              <p className="text-slate-500">
-                                Last message: {(xmtpStatus || summary.xmtp)?.lastMessage}
-                              </p>
-                            )}
-                          </div>
-
-                          <div className="space-y-3">
-                            <div className="flex items-center justify-between">
-                              <p className="text-[11px] font-semibold text-slate-700">
-                                Rent reminder
-                              </p>
-                              <button
-                                onClick={handleSendReminder}
-                                disabled={sendingReminder}
-                                className="text-[11px] bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-lg disabled:opacity-60"
-                              >
-                                {sendingReminder ? "Sending..." : "Send"}
-                              </button>
-                            </div>
-                            <div className="grid grid-cols-2 gap-2">
-                              <input
-                                type="date"
-                                value={reminderDate}
-                                onChange={(e) => setReminderDate(e.target.value)}
-                                className="w-full border rounded-lg px-2 py-1.5 text-[11px] focus:outline-none focus:ring-1 focus:ring-indigo-500 text-black"
-                              />
-                              <input
-                                type="text"
-                                placeholder="Optional note"
-                                value={reminderNote}
-                                onChange={(e) => setReminderNote(e.target.value)}
-                                className="w-full border rounded-lg px-2 py-1.5 text-[11px] focus:outline-none focus:ring-1 focus:ring-indigo-500 text-black"
-                              />
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="grid sm:grid-cols-2 gap-3">
-                          <div className="space-y-2">
-                            <div className="flex items-center justify-between">
-                              <p className="text-[11px] font-semibold text-slate-700">
-                                Payment update
-                              </p>
-                              <button
-                                onClick={handlePaymentUpdate}
-                                disabled={sendingPaymentUpdate}
-                                className="text-[11px] bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-lg disabled:opacity-60"
-                              >
-                                {sendingPaymentUpdate ? "Sending..." : "Broadcast"}
-                              </button>
-                            </div>
-                            <div className="grid grid-cols-3 gap-2">
-                              <input
-                                type="text"
-                                placeholder="Status (e.g. Paid)"
-                                value={paymentStatusText}
-                                onChange={(e) => setPaymentStatusText(e.target.value)}
-                                className="w-full border rounded-lg px-2 py-1.5 text-[11px] focus:outline-none focus:ring-1 focus:ring-indigo-500 text-black"
-                              />
-                              <input
-                                type="number"
-                                placeholder="Amount"
-                                value={paymentAmount}
-                                onChange={(e) => setPaymentAmount(e.target.value)}
-                                className="w-full border rounded-lg px-2 py-1.5 text-[11px] focus:outline-none focus:ring-1 focus:ring-indigo-500 text-black"
-                              />
-                              <div className="text-[11px] text-slate-500 flex items-center">
-                                Sends as you to all group wallets.
-                              </div>
-                            </div>
-                          </div>
-
-                          <div className="space-y-2">
-                            <div className="flex items-center justify-between">
-                              <p className="text-[11px] font-semibold text-slate-700">
-                                Custom XMTP message
-                              </p>
-                              <button
-                                onClick={handleSendCustomXmtp}
-                                disabled={sendingXmtp}
-                                className="text-[11px] bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1.5 rounded-lg disabled:opacity-60"
-                              >
-                                {sendingXmtp ? "Sending..." : "Send"}
-                              </button>
-                            </div>
-                            <textarea
-                              placeholder="Write a message to broadcast to all group wallets"
-                              value={xmtpMessage}
-                              onChange={(e) => setXmtpMessage(e.target.value)}
-                              className="w-full border rounded-lg px-3 py-2 text-[11px] focus:outline-none focus:ring-1 focus:ring-indigo-500 text-black"
-                              rows={3}
-                            />
-                            {xmtpDelivery && (
-                              <div className="text-[11px] bg-slate-50 border border-slate-200 rounded-lg p-2 space-y-1">
-                                <p className="text-slate-700 font-semibold">Last delivery</p>
-                                <p className="text-slate-600">
-                                  Conversation: {xmtpDelivery.conversationId || "n/a"}
-                                </p>
-                                <p className="text-slate-600">
-                                  Sent to: {xmtpDelivery.sentTo?.length || 0}
-                                </p>
-                                {xmtpDelivery.unreachable?.length ? (
-                                  <p className="text-amber-700">
-                                    Unreachable: {xmtpDelivery.unreachable.join(", ")}
-                                  </p>
-                                ) : null}
-                                {xmtpDelivery.failed?.length ? (
-                                  <p className="text-red-700">
-                                    Failed:{" "}
-                                    {xmtpDelivery.failed
-                                      .map((f) => `${f.address || "unknown"} (${f.error || f.reason})`)
-                                      .join(", ")}
-                                  </p>
-                                ) : null}
-                                {xmtpDelivery.skipped?.length ? (
-                                  <p className="text-slate-600">
-                                    Skipped: {xmtpDelivery.skipped.map((s) => s.reason).join(", ")}
-                                  </p>
-                                ) : null}
-                              </div>
-                            )}
-                          </div>
+                          {loadingXmtpFeed ? (
+                            <p className="text-[11px] text-slate-500">Loading feed...</p>
+                          ) : xmtpFeed.length === 0 ? (
+                            <p className="text-[11px] text-slate-500">No XMTP updates yet.</p>
+                          ) : (
+                            <ul className="space-y-2 max-h-64 overflow-auto pr-1">
+                              {xmtpFeed.map((m) => (
+                                <li key={m.id} className="rounded-lg bg-white border border-slate-200 p-2 text-[11px]">
+                                  <div className="flex items-center justify-between">
+                                    <span className="font-semibold text-slate-800">{m.type}</span>
+                                    <span className="text-[10px] text-slate-500">{new Date(m.createdAt).toLocaleString()}</span>
+                                  </div>
+                                  <p className="text-slate-700 text-xs whitespace-pre-wrap">{m.text}</p>
+                                  {m.actor && <p className="text-[10px] text-slate-500 mt-1">Actor: {m.actor}</p>}
+                                </li>
+                              ))}
+                            </ul>
+                          )}
                         </div>
                       </section>
 
-                      <div className="space-y-2 border rounded-xl p-4 bg-white shadow-sm">
+                      <div className="border rounded-xl p-3 bg-white shadow-sm space-y-2">
                         <div className="flex items-center justify-between">
-                          <p className="text-sm font-semibold text-slate-800">
-                            Invite member
-                          </p>
-                          {inviteCode && (
-                            <span className="text-[11px] text-emerald-700 bg-emerald-100 px-2 py-1 rounded-full border border-emerald-200">
-                              Code: {inviteCode}
-                            </span>
-                          )}
+                          <p className="text-[11px] text-slate-500">Members</p>
+                          <span className="text-[11px] px-2 py-1 rounded-full border bg-slate-100 text-slate-700">{summary.members.length}</span>
                         </div>
-                        <div className="grid grid-cols-3 gap-2 text-[11px]">
-                          <input
-                            type="text"
-                            placeholder="Wallet address"
-                            value={inviteWallet}
-                            onChange={(e) => setInviteWallet(e.target.value)}
-                            className="col-span-2 border rounded-lg px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                          />
-                          <button
-                            onClick={handleInviteMember}
-                            disabled={inviting}
-                            className="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1.5 rounded-lg disabled:opacity-60"
-                          >
-                            {inviting ? "Sending..." : "Create invite"}
-                          </button>
-                        </div>
-                        <p className="text-[11px] text-slate-500">
-                          Share the invite code or use XMTP to notify the wallet owner.
-                        </p>
-                      </div>
-
-                      <div>
-                        <p className="text-[11px] text-slate-500 mb-1">
-                          Members & autopay
-                        </p>
                         <ul className="space-y-1 text-[11px]">
                           {summary.members.map((m) => (
-                            <li
-                              key={m.userId}
-                              className="flex items-center justify-between bg-white border border-slate-200 rounded px-2 py-1"
-                            >
+                            <li key={m.userId} className="flex items-center justify-between bg-white border border-slate-200 rounded px-2 py-1">
                               <div>
-                                <p className="font-medium text-slate-800">
-                                  {m.email || m.userId}
-                                </p>
-                                <p className="font-mono text-[10px] text-slate-500 truncate max-w-[160px]">
-                                  {m.walletAddress || "No wallet"}
-                                </p>
+                                <p className="font-medium text-slate-800">{m.email || m.userId}</p>
+                                <p className="font-mono text-[10px] text-slate-500 truncate max-w-[160px]">{m.walletAddress || "No wallet"}</p>
                               </div>
-                              <span
-                                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] ${
-                                  m.hasAutopay
-                                    ? "bg-emerald-100 text-emerald-700"
-                                    : "bg-slate-200 text-slate-700"
-                                }`}
-                              >
-                                <span
-                                  className={`w-1.5 h-1.5 rounded-full ${
-                                    m.hasAutopay ? "bg-emerald-500" : "bg-slate-500"
-                                  }`}
-                                />
+                              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] ${
+                                m.hasAutopay ? "bg-emerald-100 text-emerald-700" : "bg-slate-200 text-slate-700"
+                              }`}>
+                                <span className={`w-1.5 h-1.5 rounded-full ${m.hasAutopay ? "bg-emerald-500" : "bg-slate-500"}`} />
                                 {m.hasAutopay ? "Autopay on" : "Autopay off"}
                               </span>
                             </li>
@@ -1273,17 +1200,23 @@ export default function MiniappPage() {
                         </ul>
                       </div>
 
-                      <p className="text-[11px] text-slate-400">
-                        Next: we will add a Settle Now flow that links XMTP notifications.
-                      </p>
+                      <div className="flex items-center justify-between">
+                        <p className="text-[11px] text-slate-500">Need to leave?</p>
+                        <button
+                          onClick={handleLeaveGroup}
+                          disabled={leavingGroup}
+                          className="text-[11px] px-3 py-1.5 rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+                        >
+                          {leavingGroup ? "Leaving..." : "Leave group"}
+                        </button>
+                      </div>
                     </div>
                   )}
                 </section>
               </div>
             </div>
           )}
-
-          {viewMode === "create" && (
+{viewMode === "create" && (
             <div className="border rounded-2xl p-4 bg-slate-50 space-y-3">
               <h2 className="text-sm font-semibold text-slate-800">Create a Group</h2>
               <div className="space-y-2 text-xs">
@@ -1436,6 +1369,142 @@ export default function MiniappPage() {
           )}
         </div>
       </div>
+      {showSettings && summary && (
+        <div className="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-50 px-4">
+          <div className="w-full max-w-2xl bg-white rounded-2xl shadow-xl border border-slate-200 p-4 space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-[11px] text-slate-500">Group settings</p>
+                <p className="text-sm font-semibold text-slate-800">{summary.group.name}</p>
+              </div>
+              <button
+                onClick={() => setShowSettings(false)}
+                className="text-sm text-slate-600 hover:text-slate-800 px-2 py-1 rounded-lg border border-slate-200 bg-slate-50"
+              >
+                Close
+              </button>
+            </div>
+
+            {isOwner ? (
+              <div className="grid md:grid-cols-2 gap-3 text-xs">
+                <div className="space-y-2 border rounded-lg p-3 bg-slate-50">
+                  <div className="flex items-center justify-between">
+                    <p className="font-semibold text-slate-800">Rent reminder</p>
+                    <button
+                      onClick={handleSendReminder}
+                      disabled={sendingReminder}
+                      className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded-md disabled:opacity-60"
+                    >
+                      {sendingReminder ? "Sending..." : "Send"}
+                    </button>
+                  </div>
+                  <input
+                    type="date"
+                    value={reminderDate}
+                    onChange={(e) => setReminderDate(e.target.value)}
+                    className="w-full border rounded-lg px-2 py-1.5 text-[11px] focus:outline-none focus:ring-1 focus:ring-indigo-500 text-black"
+                  />
+                  <input
+                    type="text"
+                    placeholder="Optional note"
+                    value={reminderNote}
+                    onChange={(e) => setReminderNote(e.target.value)}
+                    className="w-full border rounded-lg px-2 py-1.5 text-[11px] focus:outline-none focus:ring-1 focus:ring-indigo-500 text-black"
+                  />
+                </div>
+
+                <div className="space-y-2 border rounded-lg p-3 bg-slate-50">
+                  <div className="flex items-center justify-between">
+                    <p className="font-semibold text-slate-800">Group payment update</p>
+                    <button
+                      onClick={handlePaymentUpdate}
+                      disabled={sendingPaymentUpdate}
+                      className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1 rounded-md disabled:opacity-60"
+                    >
+                      {sendingPaymentUpdate ? "Sending..." : "Broadcast"}
+                    </button>
+                  </div>
+                  <input
+                    type="text"
+                    placeholder="Status (e.g. Paid)"
+                    value={paymentStatusText}
+                    onChange={(e) => setPaymentStatusText(e.target.value)}
+                    className="w-full border rounded-lg px-2 py-1.5 text-[11px] focus:outline-none focus:ring-1 focus:ring-indigo-500 text-black"
+                  />
+                  <input
+                    type="number"
+                    placeholder="Amount"
+                    value={paymentAmount}
+                    onChange={(e) => setPaymentAmount(e.target.value)}
+                    className="w-full border rounded-lg px-2 py-1.5 text-[11px] focus:outline-none focus:ring-1 focus:ring-indigo-500 text-black"
+                  />
+                </div>
+
+                <div className="space-y-2 border rounded-lg p-3 bg-slate-50">
+                  <div className="flex items-center justify-between">
+                    <p className="font-semibold text-slate-800">Announcement</p>
+                    <button
+                      onClick={handleSendCustomXmtp}
+                      disabled={sendingXmtp}
+                      className="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1 rounded-md disabled:opacity-60"
+                    >
+                      {sendingXmtp ? "Sending..." : "Send"}
+                    </button>
+                  </div>
+                  <textarea
+                    placeholder="Write a short announcement to broadcast"
+                    value={xmtpMessage}
+                    onChange={(e) => setXmtpMessage(e.target.value)}
+                    className="w-full border rounded-lg px-3 py-2 text-[11px] focus:outline-none focus:ring-1 focus:ring-indigo-500 text-black"
+                    rows={3}
+                  />
+                </div>
+
+                <div className="space-y-2 border rounded-lg p-3 bg-slate-50">
+                  <div className="flex items-center justify-between">
+                    <p className="font-semibold text-slate-800">Invite via wallet</p>
+                    <button
+                      onClick={handleInviteMember}
+                      disabled={inviting}
+                      className="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1 rounded-md disabled:opacity-60"
+                    >
+                      {inviting ? "Creating..." : "Create invite"}
+                    </button>
+                  </div>
+                  <input
+                    type="text"
+                    placeholder="Wallet address"
+                    value={inviteWallet}
+                    onChange={(e) => setInviteWallet(e.target.value)}
+                    className="w-full border rounded-lg px-2 py-1.5 text-[11px] focus:outline-none focus:ring-1 focus:ring-indigo-500 text-black"
+                  />
+                  {inviteCode && (
+                    <p className="text-[11px] text-emerald-700">Invite code: {inviteCode}</p>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3 text-xs">
+                <div className="border rounded-lg p-3 bg-slate-50">
+                  <p className="font-semibold text-slate-800 mb-1">Your autopay</p>
+                  <p className="text-slate-600">
+                    {autopayEnabled
+                      ? "Autopay is enabled for your wallet."
+                      : "Autopay is not enabled yet. You can enable it from the group view."}
+                  </p>
+                </div>
+                <button
+                  onClick={handleLeaveGroup}
+                  disabled={leavingGroup}
+                  className="px-3 py-2 rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+                >
+                  {leavingGroup ? "Leaving..." : "Leave group"}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </main>
   );
 }

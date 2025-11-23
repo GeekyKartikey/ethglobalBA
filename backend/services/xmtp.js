@@ -1,7 +1,7 @@
 // backend/services/xmtp.js
 // XMTP helper to broadcast group updates from the RentSplit system wallet.
 
-const { xmtpGroups, xmtpInvites } = require("../store/memoryStore");
+const { xmtpGroups, xmtpInvites, xmtpLogs } = require("../store/memoryStore");
 
 let clientPromise = null;
 
@@ -29,6 +29,15 @@ async function getXmtpClient() {
 
 function uniqueLower(addresses = []) {
   return [...new Set(addresses.filter(Boolean).map((a) => a.toLowerCase()))];
+}
+
+function appendLog(groupId, entry) {
+  if (!xmtpLogs[groupId]) xmtpLogs[groupId] = [];
+  xmtpLogs[groupId].unshift(entry);
+  // keep last 200 entries to avoid unbounded growth
+  if (xmtpLogs[groupId].length > 200) {
+    xmtpLogs[groupId] = xmtpLogs[groupId].slice(0, 200);
+  }
 }
 
 async function filterReachable(client, addresses) {
@@ -88,9 +97,18 @@ async function broadcastGroupUpdate({
   groupName,
   memberWallets,
   text,
+  meta = {},
 }) {
   const addresses = uniqueLower(memberWallets);
   if (!addresses.length) {
+    appendLog(groupId, {
+      id: meta.id || `log-${groupId}-${Date.now()}`,
+      type: meta.type || "notice",
+      text: text || "No recipients to notify",
+      payload: meta.payload || { reason: "no_addresses" },
+      actor: meta.actor || null,
+      createdAt: new Date().toISOString(),
+    });
     return {
       sentTo: [],
       skipped: [{ reason: "no_addresses" }],
@@ -129,6 +147,15 @@ async function broadcastGroupUpdate({
       lastUnreachable: unreachable,
     };
 
+    appendLog(groupId, {
+      id: meta.id || `log-${groupId}-${Date.now()}`,
+      type: meta.type || "notice",
+      text,
+      payload: meta.payload || null,
+      actor: meta.actor || null,
+      createdAt: new Date().toISOString(),
+    });
+
     return {
       conversationId: context.conversationId,
       sentTo,
@@ -137,6 +164,14 @@ async function broadcastGroupUpdate({
     };
   } catch (err) {
     console.warn("XMTP disabled or failed", err?.message || err);
+    appendLog(groupId, {
+      id: meta.id || `log-${groupId}-${Date.now()}`,
+      type: meta.type || "notice",
+      text: text || "XMTP send failed",
+      payload: { error: err?.message || "xmtp_unavailable" },
+      actor: meta.actor || null,
+      createdAt: new Date().toISOString(),
+    });
     return {
       conversationId: null,
       sentTo: [],

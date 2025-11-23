@@ -1,0 +1,20 @@
+{
+  "name": "RentSplit",
+  "description": "Split rent, enable autopay, and broadcast updates to roommates.",
+  "icon": "/logo.jpeg",
+  "url": "https://ethglobal-ba.vercel.app/",
+  "developer": {
+    "name": "Kartikey Garg",
+    "url": "https://x.com/geeky_kartikey"
+  },
+  "categories": ["finance", "productivity"],
+  "chains": ["base"],
+  "entrypoints": {
+    "browser": "https://ethglobal-ba.vercel.app/miniapp"
+  },
+  "permissions": {
+    "wallet": {
+      "required": true
+    }
+  }
+}

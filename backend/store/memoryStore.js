@@ -24,6 +24,9 @@ const xmtpGroups = {};
 // XMTP INVITES: code -> { code, groupId, walletAddress, status, createdAt, acceptedAt? }
 const xmtpInvites = {};
 
+// XMTP MESSAGE LOGS: groupId -> [ { id, type, text, payload, actor, createdAt } ]
+const xmtpLogs = {};
+
 // PAYMENT RETRIES: `${groupId}:${userId}` -> { nextRun: ISO string, attempts: number, lastReason?: string }
 const paymentRetries = {};
 
@@ -36,5 +39,6 @@ module.exports = {
   settlements,
   xmtpGroups,
   xmtpInvites,
+  xmtpLogs,
   paymentRetries,
 };

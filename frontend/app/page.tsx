@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useEffect } from "react";
 import { usePrivy } from "@privy-io/react-auth";
@@ -35,7 +35,7 @@ export default function HomePage() {
             </h1>
             <p className="text-lg text-white/80 max-w-xl">
               One tap to split, autopay, and stay current on rent with your
-              housemates. Powered by Privy embedded wallets.
+              housemates. Powered by x402 Payments + XMTP notifications.
             </p>
           </div>
 
@@ -51,7 +51,7 @@ export default function HomePage() {
             <div className="flex items-center gap-2 text-sm text-emerald-200 bg-emerald-500/15 border border-emerald-300/30 rounded-xl px-4 py-3 backdrop-blur-sm">
               <span className="w-2 h-2 rounded-full bg-emerald-300 animate-ping" />
               <span className="w-2 h-2 rounded-full bg-emerald-300" />
-              <span>Base miniapp is live — log in to jump in.</span>
+              <span>Base miniapp is live � log in to jump in.</span>
             </div>
           </div>
 
@@ -65,8 +65,8 @@ export default function HomePage() {
               <p>Everyone sees their share instantly.</p>
             </div>
             <div className="bg-white/5 border border-white/10 rounded-xl p-3">
-              <p className="font-semibold text-white">Filecoin ready</p>
-              <p>Settlement trail stored for peace of mind.</p>
+              <p className="font-semibold text-white">XMTP alerts</p>
+              <p>Group updates reach every member wallet.</p>
             </div>
           </div>
         </div>
@@ -96,9 +96,9 @@ export default function HomePage() {
               </span>
             </div>
             <div className="flex items-center justify-between">
-              <span>Filecoin settlement</span>
+              <span>XMTP notifications</span>
               <span className="px-3 py-1 rounded-full bg-amber-500/15 text-amber-200 border border-amber-300/30">
-                Stubbed
+                Live
               </span>
             </div>
           </div>
@@ -191,7 +191,12 @@ function RentSplitLogo() {
         />
         <rect x="26" y="34" width="8" height="14" rx="2" fill="#ffd166" />
       </g>
-      <g transform="translate(96 108)" fill="#ffc436" stroke="#e29500" strokeWidth="3">
+      <g
+        transform="translate(96 108)"
+        fill="#ffc436"
+        stroke="#e29500"
+        strokeWidth="3"
+      >
         <circle cx="0" cy="0" r="10" />
         <circle cx="16" cy="10" r="10" />
         <circle cx="32" cy="2" r="10" />

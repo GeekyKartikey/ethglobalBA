@@ -11,6 +11,7 @@ const {
   xmtpGroups,
   xmtpInvites,
   paymentRetries,
+  xmtpLogs,
 } = require("../store/memoryStore");
 const {
   broadcastGroupUpdate,
@@ -28,6 +29,10 @@ function getGroupMemberIds(groupId) {
 function userIsInGroup(groupId, userId) {
   if (!userId) return false;
   return (groupMembers[groupId] || new Set()).has(userId);
+}
+
+function userIsOwner(groupId, userId) {
+  return !!userId && groups[groupId]?.createdBy === userId;
 }
 
 function collectMemberWallets(groupId) {
@@ -54,6 +59,21 @@ function displayNameOrWallet(user) {
   return user.id || "member";
 }
 
+function appendLog(groupId, entry) {
+  if (!xmtpLogs[groupId]) xmtpLogs[groupId] = [];
+  xmtpLogs[groupId].unshift({
+    id: entry.id || `log-${groupId}-${Date.now()}`,
+    createdAt: entry.createdAt || new Date().toISOString(),
+    type: entry.type || "notice",
+    text: entry.text || "",
+    actor: entry.actor || null,
+    payload: entry.payload || null,
+  });
+  if (xmtpLogs[groupId].length > 200) {
+    xmtpLogs[groupId] = xmtpLogs[groupId].slice(0, 200);
+  }
+}
+
 function findUserByWallet(walletAddress) {
   const lower = walletAddress?.toLowerCase();
   if (!lower) return null;
@@ -62,7 +82,7 @@ function findUserByWallet(walletAddress) {
   );
 }
 
-async function sendGroupMessage(groupId, text) {
+async function sendGroupMessage(groupId, text, meta = {}) {
   const group = groups[groupId];
   if (!group) return;
   const memberWallets = collectMemberWallets(groupId);
@@ -71,6 +91,7 @@ async function sendGroupMessage(groupId, text) {
     groupName: group.name,
     memberWallets,
     text,
+    meta,
   });
 }
 
@@ -131,11 +152,23 @@ router.post("/", async (req, res) => {
       groupId,
       groupName: name,
       memberWallets,
-      text: `📣 New RentSplit group "${name}" created. Total rent: ${totalRent} ${token}. Collector: ${collectorAddress}.`,
+      text: `New rent group "${name}" created. Total rent: ${totalRent} ${token}. Collector: ${collectorAddress}.`,
+      meta: { type: "group_created" },
+    });
+    appendLog(groupId, {
+      type: "group_created",
+      text: `Group "${name}" created. Total rent: ${totalRent} ${token}. Collector: ${collectorAddress}.`,
+      actor: users[userId]?.walletAddress || users[userId]?.email || userId,
     });
   } catch (err) {
     console.warn("XMTP create group failed", err);
+    appendLog(groupId, {
+      type: "group_created",
+      text: `Group "${name}" created (XMTP failed: ${err?.message || "unknown"})`,
+      actor: users[userId]?.walletAddress || users[userId]?.email || userId,
+    });
   }
+
 
   res.json({ groupId });
 });
@@ -166,7 +199,15 @@ router.post("/:groupId/members/add-wallet", async (req, res) => {
   groupMembers[groupId].add(user.id);
 
   await ensureGroupConversation(groupId, group.name);
-  await sendGroupMessage(groupId, `👤 ${displayNameOrWallet(user)} has joined the rent group.`);
+  await sendGroupMessage(groupId, `👤 ${displayNameOrWallet(user)} has joined the rent group.`, {
+    type: "member_joined",
+    actor: user.walletAddress || user.email || user.id,
+  });
+  appendLog(groupId, {
+    type: "member_joined",
+    text: `${displayNameOrWallet(user)} joined the group.`,
+    actor: user.walletAddress || user.email || user.id,
+  });
 
   res.json({ ok: true, userId: user.id });
 });
@@ -232,9 +273,46 @@ router.post("/xmtp/invite/:code/accept", async (req, res) => {
   invite.acceptedAt = new Date().toISOString();
 
   await ensureGroupConversation(group.id, group.name);
-  await sendGroupMessage(group.id, `👤 ${displayNameOrWallet(user)} has joined the rent group.`);
+  await sendGroupMessage(group.id, `👤 ${displayNameOrWallet(user)} has joined the rent group.`, {
+    type: "member_joined",
+    actor: user.walletAddress || user.email || user.id,
+  });
+  appendLog(group.id, {
+    type: "member_joined",
+    text: `${displayNameOrWallet(user)} joined the group (invite).`,
+    actor: user.walletAddress || user.email || user.id,
+  });
 
   res.json({ ok: true, userId: user.id });
+});
+
+// POST /groups/:groupId/leave
+router.post("/:groupId/leave", (req, res) => {
+  const { groupId } = req.params;
+  const { userId } = req.body || {};
+  if (!userId) return res.status(400).json({ error: "userId is required" });
+  const group = groups[groupId];
+  if (!group) return res.status(404).json({ error: "Group not found" });
+  if (!userIsInGroup(groupId, userId)) {
+    return res.status(403).json({ error: "User is not a member of this group" });
+  }
+
+  groupMembers[groupId]?.delete(userId);
+  delete x402Authorizations[`${groupId}:${userId}`];
+
+  const actor = users[userId];
+  sendGroupMessage(
+    groupId,
+    `${displayNameOrWallet(actor)} left the group.`,
+    { type: "member_left", actor: actor?.walletAddress || actor?.email || userId }
+  ).catch(() => {});
+  appendLog(groupId, {
+    type: "member_left",
+    text: `${displayNameOrWallet(actor)} left the group.`,
+    actor: actor?.walletAddress || actor?.email || userId,
+  });
+
+  res.json({ ok: true });
 });
 
 // GET /groups/:groupId/summary?userId=...
@@ -301,6 +379,9 @@ router.patch("/:groupId/rent-due-day", (req, res) => {
   if (!userId) return res.status(400).json({ error: "userId is required" });
   const group = groups[groupId];
   if (!group) return res.status(404).json({ error: "Group not found" });
+  if (!userIsOwner(groupId, userId)) {
+    return res.status(403).json({ error: "Only the group owner can change the rent due day" });
+  }
   if (!userIsInGroup(groupId, userId)) {
     return res.status(403).json({ error: "User is not a member of this group" });
   }
@@ -443,23 +524,25 @@ router.post("/:groupId/settle-now", async (req, res) => {
 // POST /groups/:groupId/xmtp/reminder
 router.post("/:groupId/xmtp/reminder", async (req, res) => {
   const { groupId } = req.params;
-  const { dueDate, note } = req.body || {};
+  const { dueDate, note, userId } = req.body || {};
   const group = groups[groupId];
   if (!group) return res.status(404).json({ error: "Group not found" });
+  if (userId && !userIsOwner(groupId, userId)) {
+    return res.status(403).json({ error: "Only the group owner can send reminders" });
+  }
 
   const memberIds = getGroupMemberIds(groupId);
   const memberWallets = collectMemberWallets(groupId);
 
   const when = dueDate ? `by ${dueDate}` : "soon";
-  const message = `⏰ Rent reminder for "${group.name}": ${group.totalRent} ${group.token} is due ${when}. ${
-    note ? note : ""
-  }`;
+  const message = `Rent reminder for "${group.name}": ${group.totalRent} ${group.token} is due ${when}. ${note ? note : ""}`;
 
   const result = await broadcastGroupUpdate({
     groupId,
     groupName: group.name,
     memberWallets,
     text: message,
+    meta: { type: "rent_reminder", payload: { dueDate, note } },
   });
 
   persistEvent({
@@ -479,6 +562,9 @@ router.post("/:groupId/xmtp/payment-update", async (req, res) => {
   const { userId, status, amount, token } = req.body || {};
   const group = groups[groupId];
   if (!group) return res.status(404).json({ error: "Group not found" });
+  if (userId && !userIsOwner(groupId, userId)) {
+    return res.status(403).json({ error: "Only the group owner can send payment updates" });
+  }
 
   const memberIds = getGroupMemberIds(groupId);
   const memberWallets = collectMemberWallets(groupId);
@@ -494,7 +580,8 @@ router.post("/:groupId/xmtp/payment-update", async (req, res) => {
     groupId,
     groupName: group.name,
     memberWallets,
-    text: `💬 ${label} ${statusText}: ${amountText} for "${group.name}".`,
+    text: `${label} ${statusText}: ${amountText} for "${group.name}".`,
+    meta: { type: "payment_update_group", payload: { userId, status, amount, token, label } },
   });
 
   persistEvent({
@@ -525,7 +612,7 @@ router.get("/:groupId/xmtp", (req, res) => {
   });
 });
 
-// POST /groups/:groupId/xmtp/custom - send a freeform XMTP message to group wallets
+// POST /groups/:groupId/xmtp/custom - owner announcement only
 router.post("/:groupId/xmtp/custom", async (req, res) => {
   const { groupId } = req.params;
   const { userId, text } = req.body || {};
@@ -534,8 +621,8 @@ router.post("/:groupId/xmtp/custom", async (req, res) => {
   if (!text || !text.trim()) {
     return res.status(400).json({ error: "Message text is required" });
   }
-  if (userId && !userIsInGroup(groupId, userId)) {
-    return res.status(403).json({ error: "User is not a member of this group" });
+  if (!userId || !userIsOwner(groupId, userId)) {
+    return res.status(403).json({ error: "Only the group owner can send announcements" });
   }
 
   const memberWallets = collectMemberWallets(groupId);
@@ -545,6 +632,7 @@ router.post("/:groupId/xmtp/custom", async (req, res) => {
     groupName: group.name,
     memberWallets,
     text: text.trim(),
+    meta: { type: "announcement", actor: users[userId]?.walletAddress || users[userId]?.email || userId },
   });
 
   persistEvent({
@@ -556,6 +644,22 @@ router.post("/:groupId/xmtp/custom", async (req, res) => {
   }).catch(() => {});
 
   res.json({ ok: true, xmtp: xmtpGroups[groupId] || null, delivery: result });
+});
+
+// GET /groups/:groupId/xmtp/log?userId=...
+router.get("/:groupId/xmtp/log", (req, res) => {
+  const { groupId } = req.params;
+  const { userId } = req.query;
+  const group = groups[groupId];
+  if (!group) return res.status(404).json({ error: "Group not found" });
+  if (userId && !userIsInGroup(groupId, userId)) {
+    return res.status(403).json({ error: "User is not a member of this group" });
+  }
+  res.json({
+    groupId,
+    messages: xmtpLogs[groupId] || [],
+    conversationId: xmtpGroups[groupId]?.conversationId || groups[groupId]?.xmtpConversationId || null,
+  });
 });
 
 module.exports = router;
