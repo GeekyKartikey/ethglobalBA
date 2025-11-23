@@ -1,0 +1,32 @@
+{
+  "accountAssociation": {
+    "header": "",
+    "payload": "",
+    "signature": ""
+  },
+  "baseBuilder": {
+    "ownerAddress": "0x"
+  },
+  "miniapp": {
+    "version": "1",
+    "name": "RentSplit",
+    "homeUrl": "https://ethglobal-ba.vercel.app/miniapp",
+    "iconUrl": "https://ethglobal-ba.vercel.app/logo.jpeg",
+    "splashImageUrl": "https://ethglobal-ba.vercel.app/logo.jpeg",
+    "splashBackgroundColor": "#0f172a",
+    "webhookUrl": "https://ethglobal-ba.vercel.app/api/webhook",
+    "subtitle": "Split rent, automate payments, notify roommates",
+    "description": "Rent autopay with shared splits and XMTP notifications.",
+    "screenshotUrls": [
+      "https://ethglobal-ba.vercel.app/og.png"
+    ],
+    "primaryCategory": "finance",
+    "tags": ["rent", "autopay", "xmtp", "baseapp"],
+    "heroImageUrl": "https://ethglobal-ba.vercel.app/og.png",
+    "tagline": "One tap autopay for roommates",
+    "ogTitle": "RentSplit",
+    "ogDescription": "Peace of mind for every roommate with autopay + XMTP alerts.",
+    "ogImageUrl": "https://ethglobal-ba.vercel.app/og.png",
+    "noindex": true
+  }
+}

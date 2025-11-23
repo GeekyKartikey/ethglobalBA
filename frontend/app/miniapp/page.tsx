@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { usePrivy, useWallets, useFundWallet } from "@privy-io/react-auth";
 import { useRouter } from "next/navigation";
+import { sdk } from "@farcaster/miniapp-sdk";
 
 const BACKEND_URL =
   process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:4000";
@@ -93,6 +94,7 @@ export default function MiniappPage() {
   const { fundWallet } = useFundWallet();
   const router = useRouter();
 
+  const [loginRequested, setLoginRequested] = useState(false);
   const [userId, setUserId] = useState<string | null>(null);
   const [groups, setGroups] = useState<Group[]>([]);
   const [loading, setLoading] = useState(false);
@@ -161,6 +163,22 @@ export default function MiniappPage() {
   const [showSettings, setShowSettings] = useState(false);
   const [showGroupActions, setShowGroupActions] = useState(false);
   const [leavingGroup, setLeavingGroup] = useState(false);
+
+  useEffect(() => {
+    sdk?.actions?.ready?.();
+  }, []);
+
+  useEffect(() => {
+    if (!privyReady || authenticated || loginRequested) return;
+    setLoginRequested(true);
+    (async () => {
+      try {
+        await login();
+      } catch {
+        setLoginRequested(false);
+      }
+    })();
+  }, [privyReady, authenticated, loginRequested, login]);
 
   useEffect(() => {
     if (!privyReady || !authenticated) return;
@@ -791,21 +809,12 @@ export default function MiniappPage() {
       <div className="w-full max-w-3xl flex flex-col gap-4 relative">
         {(!privyReady || isBooting || !authenticated) && (
           <div className="absolute inset-0 z-30 bg-white/80 backdrop-blur-sm rounded-2xl border border-slate-200 flex items-center justify-center">
-            {!privyReady ? (
-              <div className="text-sm text-slate-700 font-semibold">Initializing...</div>
-            ) : !authenticated ? (
-              <div className="flex flex-col items-center gap-3">
-                <p className="text-sm text-slate-700">Please sign in to continue</p>
-                <button
-                  onClick={login}
-                  className="px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700"
-                >
-                  Login with Privy
-                </button>
-              </div>
-            ) : (
-              <div className="text-sm text-slate-700 font-semibold">Connecting...</div>
-            )}
+            <div className="flex flex-col items-center gap-3">
+              <div className="w-10 h-10 border-2 border-slate-400 border-t-transparent rounded-full animate-spin" />
+              <p className="text-sm text-slate-700 font-semibold">
+                {!privyReady ? "Preparing session..." : "Loading your workspace..."}
+              </p>
+            </div>
           </div>
         )}
         {/* TOP BAR - profile */}
