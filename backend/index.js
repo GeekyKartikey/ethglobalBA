@@ -10,6 +10,7 @@ const groupRoutes = require("./routes/groups");
 const inviteRoutes = require("./routes/invites");
 const walletRoutes = require("./routes/wallets");
 const filecoinRoutes = require("./routes/filecoin");
+const { startDailyScheduler } = require("./services/scheduler");
 
 const app = express();
 
@@ -36,4 +37,5 @@ app.use("/filecoin", filecoinRoutes); // /filecoin/status
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
   console.log(`Backend API listening on port ${PORT}`);
+  startDailyScheduler();
 });

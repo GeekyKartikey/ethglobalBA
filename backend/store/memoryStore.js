@@ -18,8 +18,14 @@ const x402Authorizations = {};
 // SETTLEMENTS: groupId -> [ { id, cid, createdAt } ]
 const settlements = {};
 
-// XMTP GROUP THREADS: groupId -> { conversationId, members, lastSentAt, title }
+// XMTP GROUP THREADS: groupId -> { conversationId, members, lastSentAt, title, lastMessage, lastFailed, lastUnreachable }
 const xmtpGroups = {};
+
+// XMTP INVITES: code -> { code, groupId, walletAddress, status, createdAt, acceptedAt? }
+const xmtpInvites = {};
+
+// PAYMENT RETRIES: `${groupId}:${userId}` -> { nextRun: ISO string, attempts: number, lastReason?: string }
+const paymentRetries = {};
 
 module.exports = {
   users,
@@ -29,4 +35,6 @@ module.exports = {
   x402Authorizations,
   settlements,
   xmtpGroups,
+  xmtpInvites,
+  paymentRetries,
 };

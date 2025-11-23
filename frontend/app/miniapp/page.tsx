@@ -12,6 +12,18 @@ function formatAddress(addr: string | null | undefined) {
   return addr.length <= 12 ? addr : `${addr.slice(0, 6)}...${addr.slice(-4)}`;
 }
 
+async function parseJsonResponse(res: Response) {
+  const text = await res.text();
+  try {
+    return text ? JSON.parse(text) : null;
+  } catch (err) {
+    const preview = text.slice(0, 200);
+    throw new Error(
+      `Expected JSON but got status ${res.status} ${res.statusText}: ${preview}`
+    );
+  }
+}
+
 type Group = {
   id: string;
   name: string;
@@ -70,6 +82,15 @@ export default function MiniappPage() {
   const [summary, setSummary] = useState<GroupSummary | null>(null);
   const [loadingSummary, setLoadingSummary] = useState(false);
   const [autopayEnabled, setAutopayEnabled] = useState(false);
+  const [autopayStatus, setAutopayStatus] = useState<
+    | "unknown"
+    | "not_authorized"
+    | "approved"
+    | "authorized"
+    | "processing"
+    | "failed"
+    | "pending"
+  >("unknown");
   const [loadingAutopay, setLoadingAutopay] = useState(false);
   const [funding, setFunding] = useState(false);
   const [fundingAvailable, setFundingAvailable] = useState(true);
@@ -140,14 +161,14 @@ export default function MiniappPage() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ privyUserId, email, walletAddress: walletAddr }),
         });
-        const authJson = await authRes.json();
+        const authJson = await parseJsonResponse(authRes);
         setUserId(authJson.id);
 
         // 2) Fetch groups for this user
         const groupsRes = await fetch(
           `${BACKEND_URL}/groups?userId=${encodeURIComponent(authJson.id)}`
         );
-        const groupsJson = await groupsRes.json();
+        const groupsJson = await parseJsonResponse(groupsRes);
         setGroups(groupsJson);
       } catch (err) {
         console.error("Error syncing with backend", err);
@@ -193,7 +214,7 @@ export default function MiniappPage() {
         }),
       });
 
-      const json = await res.json();
+      const json = await parseJsonResponse(res);
 
       if (!res.ok) {
         console.error("Create group error", json);
@@ -204,7 +225,7 @@ export default function MiniappPage() {
       const groupsRes = await fetch(
         `${BACKEND_URL}/groups?userId=${encodeURIComponent(userId)}`
       );
-      const groupsJson = await groupsRes.json();
+      const groupsJson = await parseJsonResponse(groupsRes);
       setGroups(groupsJson);
 
       setNewGroupName("");
@@ -224,6 +245,7 @@ export default function MiniappPage() {
     setLoadingSummary(true);
     setSummary(null);
     setAutopayEnabled(false);
+    setAutopayStatus("unknown");
     setXmtpStatus(null);
     setXmtpDelivery(null);
 
@@ -233,7 +255,7 @@ export default function MiniappPage() {
           userId
         )}`
       );
-      const json = await res.json();
+      const json = await parseJsonResponse(res);
 
       if (!res.ok) {
         console.error("Error fetching summary", json);
@@ -259,11 +281,10 @@ export default function MiniappPage() {
           userId
         )}`
       );
-      const data = await res.json();
+      const data = await parseJsonResponse(res);
       if (res.ok) {
-        setAutopayEnabled(
-          data.status === "authorized" || data.status === "approved"
-        );
+        setAutopayStatus(data.status || "unknown");
+        setAutopayEnabled(data.status === "approved");
       }
     } catch (err) {
       console.error("Error loading autopay status", err);
@@ -276,7 +297,7 @@ export default function MiniappPage() {
     setLoadingXmtpStatus(true);
     try {
       const res = await fetch(`${BACKEND_URL}/groups/${groupId}/xmtp`);
-      const data = await res.json();
+      const data = await parseJsonResponse(res);
       if (res.ok) {
         setXmtpStatus(data);
         setSummary((prev) => (prev ? { ...prev, xmtp: data } : prev));
@@ -291,6 +312,7 @@ export default function MiniappPage() {
   async function handleEnableAutopay() {
     if (!selectedGroupId || !userId) return;
     setLoadingAutopay(true);
+    setAutopayStatus("processing");
     try {
       const res = await fetch(
         `${BACKEND_URL}/groups/${selectedGroupId}/x402/initiate`,
@@ -300,13 +322,16 @@ export default function MiniappPage() {
           body: JSON.stringify({ userId }),
         }
       );
-      const data = await res.json();
+      const data = await parseJsonResponse(res);
       if (data.x402Url) {
         window.open(data.x402Url, "_blank");
       }
-      setAutopayEnabled(true);
+      // keep disabled until status endpoint confirms approval
+      setAutopayEnabled(false);
+      loadAutopayStatus(selectedGroupId);
     } catch (err) {
       console.error("Error enabling autopay", err);
+      setAutopayStatus("failed");
     } finally {
       setLoadingAutopay(false);
     }
@@ -348,12 +373,12 @@ export default function MiniappPage() {
     async function fetchBalance() {
       setLoadingBalance(true);
       try {
-        const res = await fetch(
-          `${BACKEND_URL}/wallets/${encodeURIComponent(
-            walletAddr
-          )}/balance?chain=ethereum`
-        );
-        const json = await res.json();
+      const res = await fetch(
+        `${BACKEND_URL}/wallets/${encodeURIComponent(
+          walletAddr
+        )}/balance?chain=ethereum`
+      );
+      const json = await parseJsonResponse(res);
         if (res.ok) {
           setWalletBalance(json.balance);
           setWalletBalanceChain(json.chain || "ethereum");
@@ -396,7 +421,7 @@ export default function MiniappPage() {
           }),
         }
       );
-      const json = await res.json();
+      const json = await parseJsonResponse(res);
       if (!res.ok) {
         throw new Error(json.error || "Failed to send reminder");
       }
@@ -434,7 +459,7 @@ export default function MiniappPage() {
           body: JSON.stringify({ userId, text: xmtpMessage }),
         }
       );
-      const json = await res.json();
+      const json = await parseJsonResponse(res);
       if (!res.ok) {
         throw new Error(json.error || "Failed to send XMTP message");
       }
@@ -476,7 +501,7 @@ export default function MiniappPage() {
           }),
         }
       );
-      const json = await res.json();
+      const json = await parseJsonResponse(res);
       if (!res.ok) {
         throw new Error(json.error || "Failed to send update");
       }
@@ -515,7 +540,7 @@ export default function MiniappPage() {
           walletAddress: inviteWallet,
         }),
       });
-      const json = await res.json();
+      const json = await parseJsonResponse(res);
       if (!res.ok) {
         throw new Error(json.error || "Failed to create invite");
       }
@@ -548,7 +573,7 @@ export default function MiniappPage() {
           body: JSON.stringify({ userId }),
         }
       );
-      const json = await res.json();
+      const json = await parseJsonResponse(res);
       if (!res.ok) {
         throw new Error(json.error || "Failed to join group");
       }
@@ -558,7 +583,7 @@ export default function MiniappPage() {
       const groupsRes = await fetch(
         `${BACKEND_URL}/groups?userId=${encodeURIComponent(userId)}`
       );
-      const groupsJson = await groupsRes.json();
+      const groupsJson = await parseJsonResponse(groupsRes);
       setGroups(groupsJson);
     } catch (err) {
       console.error("Join error", err);
@@ -580,6 +605,7 @@ export default function MiniappPage() {
       setSummary(null);
       setUserWallet(null);
       setAutopayEnabled(false);
+      setAutopayStatus("unknown");
       setXmtpStatus(null);
       setXmtpDelivery(null);
       setXmtpMessage("");
@@ -846,8 +872,17 @@ export default function MiniappPage() {
                         <p className="text-xs text-gray-700">
                           {autopayEnabled
                             ? "Autopay is enabled for your wallet."
+                            : autopayStatus === "processing"
+                            ? "Autopay setup is processing. Complete authorization to enable."
+                            : autopayStatus === "pending"
+                            ? "Autopay authorization requested. Awaiting approval."
+                            : autopayStatus === "failed"
+                            ? "Autopay failed to start. Please try again."
                             : "Autopay is not enabled yet."}
                         </p>
+                        {!autopayEnabled && autopayStatus && autopayStatus !== "unknown" && (
+                          <p className="text-[11px] text-slate-500">Status: {autopayStatus}</p>
+                        )}
                         {!autopayEnabled && (
                           <button
                             onClick={handleEnableAutopay}

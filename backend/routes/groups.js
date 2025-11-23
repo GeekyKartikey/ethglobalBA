@@ -9,8 +9,17 @@ const {
   x402Authorizations,
   settlements,
   xmtpGroups,
+  xmtpInvites,
+  paymentRetries,
 } = require("../store/memoryStore");
-const { broadcastGroupUpdate } = require("../services/xmtp");
+const {
+  broadcastGroupUpdate,
+  ensureGroupConversation,
+  sendInvite,
+  announceJoin,
+} = require("../services/xmtp");
+const { chargeMemberShareWithX402 } = require("../services/x402");
+const { uploadToFilecoinStub } = require("../services/storageStub");
 
 function getGroupMemberIds(groupId) {
   return Array.from(groupMembers[groupId] || []);
@@ -34,10 +43,46 @@ async function persistEvent(evt) {
   console.log("Persist event", evt);
 }
 
-// Filecoin stub (no-op for now)
-async function uploadToFilecoin(json) {
-  console.log("Uploading to Filecoin (stub):", json);
-  return `bafy-mock-${Date.now()}`;
+function formatPeriodLabel(date = new Date()) {
+  return date.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+}
+
+function displayNameOrWallet(user) {
+  if (!user) return "unknown";
+  if (user.email) return user.email;
+  if (user.walletAddress) return `${user.walletAddress.slice(0, 6)}...${user.walletAddress.slice(-4)}`;
+  return user.id || "member";
+}
+
+function findUserByWallet(walletAddress) {
+  const lower = walletAddress?.toLowerCase();
+  if (!lower) return null;
+  return Object.values(users).find(
+    (u) => u.walletAddress && u.walletAddress.toLowerCase() === lower
+  );
+}
+
+async function sendGroupMessage(groupId, text) {
+  const group = groups[groupId];
+  if (!group) return;
+  const memberWallets = collectMemberWallets(groupId);
+  await broadcastGroupUpdate({
+    groupId,
+    groupName: group.name,
+    memberWallets,
+    text,
+  });
+}
+
+function scheduleRetry(groupId, userId, reason) {
+  const key = `${groupId}:${userId}`;
+  const nextRun = new Date();
+  nextRun.setDate(nextRun.getDate() + 1);
+  paymentRetries[key] = {
+    nextRun: nextRun.toISOString(),
+    attempts: (paymentRetries[key]?.attempts || 0) + 1,
+    lastReason: reason,
+  };
 }
 
 // GET /groups?userId=...
@@ -53,8 +98,8 @@ router.get("/", (req, res) => {
 });
 
 // POST /groups
-router.post("/", (req, res) => {
-  const { userId, name, totalRent, token, collectorAddress } = req.body;
+router.post("/", async (req, res) => {
+  const { userId, name, totalRent, token, collectorAddress, rentDueDay } = req.body;
 
   if (!userId || !name || !totalRent || !token || !collectorAddress) {
     return res.status(400).json({ error: "Missing required fields" });
@@ -70,6 +115,8 @@ router.post("/", (req, res) => {
     collectorAddress,
     createdBy: userId,
     createdAt: new Date().toISOString(),
+    rentDueDay: rentDueDay || 1,
+    xmtpConversationId: null,
   };
 
   groupMembers[groupId] = new Set([userId]);
@@ -77,14 +124,117 @@ router.post("/", (req, res) => {
   // Kick off XMTP group thread (best-effort, won't fail the request)
   const creatorWallet = users[userId]?.walletAddress || null;
   const memberWallets = [creatorWallet, collectorAddress].filter(Boolean);
-  broadcastGroupUpdate({
-    groupId,
-    groupName: name,
-    memberWallets,
-    text: `📣 New RentSplit group "${name}" created. Total rent: ${totalRent} ${token}. Collector: ${collectorAddress}.`,
-  }).catch((err) => console.warn("XMTP create group failed", err));
+  try {
+    const { context } = await ensureGroupConversation(groupId, name);
+    groups[groupId].xmtpConversationId = context.conversationId;
+    await broadcastGroupUpdate({
+      groupId,
+      groupName: name,
+      memberWallets,
+      text: `📣 New RentSplit group "${name}" created. Total rent: ${totalRent} ${token}. Collector: ${collectorAddress}.`,
+    });
+  } catch (err) {
+    console.warn("XMTP create group failed", err);
+  }
 
   res.json({ groupId });
+});
+
+// POST /groups/:groupId/members/add-wallet
+router.post("/:groupId/members/add-wallet", async (req, res) => {
+  const { groupId } = req.params;
+  const { walletAddress } = req.body || {};
+  const group = groups[groupId];
+  if (!group) return res.status(404).json({ error: "Group not found" });
+  if (!walletAddress) return res.status(400).json({ error: "walletAddress is required" });
+
+  let user = findUserByWallet(walletAddress);
+  if (!user) {
+    // create lightweight user record
+    const userId = `wallet_${walletAddress.toLowerCase()}`;
+    user = {
+      id: userId,
+      privyUserId: null,
+      walletAddress,
+      email: null,
+      createdAt: new Date().toISOString(),
+    };
+    users[userId] = user;
+  }
+
+  if (!groupMembers[groupId]) groupMembers[groupId] = new Set();
+  groupMembers[groupId].add(user.id);
+
+  await ensureGroupConversation(groupId, group.name);
+  await sendGroupMessage(groupId, `👤 ${displayNameOrWallet(user)} has joined the rent group.`);
+
+  res.json({ ok: true, userId: user.id });
+});
+
+// POST /groups/:groupId/xmtp/invite - invite by wallet to join via XMTP
+router.post("/:groupId/xmtp/invite", async (req, res) => {
+  const { groupId } = req.params;
+  const { walletAddress } = req.body || {};
+  const group = groups[groupId];
+  if (!group) return res.status(404).json({ error: "Group not found" });
+  if (!walletAddress) return res.status(400).json({ error: "walletAddress is required" });
+
+  const code = `xmtp_${Date.now()}`;
+  xmtpInvites[code] = {
+    code,
+    groupId,
+    walletAddress,
+    status: "pending",
+    createdAt: new Date().toISOString(),
+  };
+
+  const inviteResult = await sendInvite(groupId, group.name, walletAddress, code);
+  if (!inviteResult.ok) {
+    return res.status(400).json({ error: inviteResult.reason || "invite_failed" });
+  }
+
+  res.json({ ok: true, code });
+});
+
+// POST /groups/xmtp/invite/:code/accept
+router.post("/xmtp/invite/:code/accept", async (req, res) => {
+  const { code } = req.params;
+  const invite = xmtpInvites[code];
+  const { walletAddress } = req.body || {};
+  if (!invite) return res.status(404).json({ error: "Invite not found" });
+  if (invite.status === "accepted") {
+    return res.json({ ok: true, message: "Already accepted" });
+  }
+
+  const group = groups[invite.groupId];
+  if (!group) return res.status(404).json({ error: "Group not found" });
+
+  let user = findUserByWallet(walletAddress || invite.walletAddress);
+  const chosenWallet = walletAddress || invite.walletAddress;
+  if (!chosenWallet) return res.status(400).json({ error: "walletAddress required" });
+
+  if (!user) {
+    const userId = `wallet_${chosenWallet.toLowerCase()}`;
+    user = {
+      id: userId,
+      privyUserId: null,
+      walletAddress: chosenWallet,
+      email: null,
+      createdAt: new Date().toISOString(),
+    };
+    users[userId] = user;
+  }
+
+  if (!groupMembers[group.id]) groupMembers[group.id] = new Set();
+  groupMembers[group.id].add(user.id);
+
+  invite.status = "accepted";
+  invite.acceptedAt = new Date().toISOString();
+
+  await ensureGroupConversation(group.id, group.name);
+  await sendGroupMessage(group.id, `👤 ${displayNameOrWallet(user)} has joined the rent group.`);
+
+  res.json({ ok: true, userId: user.id });
 });
 
 // GET /groups/:groupId/summary?userId=...
@@ -156,15 +306,17 @@ router.post("/:groupId/x402/initiate", (req, res) => {
   const key = `${groupId}:${userId}`;
 
   x402Authorizations[key] = {
-    status: "approved", // later: wait for webhook
+    status: "pending", // set to approved after Privy callback/webhook
     authorizationId: `auth_${Date.now()}`,
     limit: group.totalRent,
     token: group.token,
     createdAt: new Date().toISOString(),
   };
 
-  const fakeUrl = "https://demo-x402-auth-page.example.com/approve";
-  res.json({ x402Url: fakeUrl });
+  const approveUrl =
+    process.env.PRIVY_X402_APPROVAL_URL ||
+    "https://auth.privy.io/apps/x402-authorize"; // replace with real Privy approval link
+  res.json({ x402Url: approveUrl, authorizationId: x402Authorizations[key].authorizationId });
 });
 
 // POST /groups/:groupId/settle-now
@@ -180,18 +332,46 @@ router.post("/:groupId/settle-now", async (req, res) => {
 
   const share = group.totalRent / memberIds.length;
 
-  const payments = memberIds.map((uid) => {
-    const user = users[uid];
-    const key = `${groupId}:${uid}`;
-    const hasAutopay = !!x402Authorizations[key];
+  const payments = [];
+  const periodLabel = formatPeriodLabel();
 
-    return {
-      from: user?.walletAddress || null,
+  for (const uid of memberIds) {
+    const user = users[uid];
+    const result = await chargeMemberShareWithX402({
+      groupId,
+      memberId: uid,
       amount: share,
-      method: hasAutopay ? "x402" : "manual",
-      txRef: `tx_${Date.now()}_${uid}`,
-    };
-  });
+      token: group.token,
+    });
+
+    if (result.ok) {
+      payments.push({
+        from: user?.walletAddress || null,
+        amount: share,
+        method: "x402",
+        txRef: result.txRef,
+        status: "paid",
+      });
+      await sendGroupMessage(
+        groupId,
+        `🟢 Rent paid by ${displayNameOrWallet(user)} for ${periodLabel}. (txRef: ${result.txRef})`
+      );
+    } else {
+      payments.push({
+        from: user?.walletAddress || null,
+        amount: share,
+        method: "x402",
+        txRef: null,
+        status: "failed",
+        reason: result.reason || "charge_failed",
+      });
+      await sendGroupMessage(
+        groupId,
+        `🔴 Rent payment failed for ${displayNameOrWallet(user)} for ${periodLabel}. Will retry tomorrow.`
+      );
+      scheduleRetry(groupId, uid, result.reason || "charge_failed");
+    }
+  }
 
   const settlementJson = {
     groupId,
@@ -202,7 +382,7 @@ router.post("/:groupId/settle-now", async (req, res) => {
     createdAt: new Date().toISOString(),
   };
 
-  const cid = await uploadToFilecoin(settlementJson);
+  const cid = await uploadToFilecoinStub(settlementJson);
 
   if (!settlements[groupId]) settlements[groupId] = [];
   settlements[groupId].push({
@@ -315,7 +495,7 @@ router.get("/:groupId/xmtp", (req, res) => {
 
   res.json({
     groupId,
-    conversationId: xmtpGroups[groupId]?.conversationId || null,
+    conversationId: xmtpGroups[groupId]?.conversationId || groups[groupId]?.xmtpConversationId || null,
     lastSentAt: xmtpGroups[groupId]?.lastSentAt || null,
     members: xmtpGroups[groupId]?.members || [],
     lastMessage: xmtpGroups[groupId]?.lastMessage || null,

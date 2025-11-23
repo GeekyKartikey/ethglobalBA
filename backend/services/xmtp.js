@@ -1,7 +1,7 @@
 // backend/services/xmtp.js
 // XMTP helper to broadcast group updates from the RentSplit system wallet.
 
-const { xmtpGroups } = require("../store/memoryStore");
+const { xmtpGroups, xmtpInvites } = require("../store/memoryStore");
 
 let clientPromise = null;
 
@@ -63,6 +63,22 @@ function buildContext(groupId, groupName) {
   };
 }
 
+async function ensureGroupConversation(groupId, groupName) {
+  const client = await getXmtpClient();
+  const context = buildContext(groupId, groupName);
+  // no-op creation: conversation is created when first message is sent.
+  xmtpGroups[groupId] = {
+    conversationId: context.conversationId,
+    members: xmtpGroups[groupId]?.members || [],
+    lastSentAt: xmtpGroups[groupId]?.lastSentAt || null,
+    title: groupName,
+    lastMessage: xmtpGroups[groupId]?.lastMessage || null,
+    lastFailed: xmtpGroups[groupId]?.lastFailed || [],
+    lastUnreachable: xmtpGroups[groupId]?.lastUnreachable || [],
+  };
+  return { client, conversationId: context.conversationId, context };
+}
+
 /**
  * Broadcast a text update to all provided member wallet addresses.
  * This uses a shared V2 conversationId so the thread is grouped in clients.
@@ -84,8 +100,7 @@ async function broadcastGroupUpdate({
   }
 
   try {
-    const client = await getXmtpClient();
-    const context = buildContext(groupId, groupName);
+    const { client, context } = await ensureGroupConversation(groupId, groupName);
 
     const { reachable, unreachable } = await filterReachable(client, addresses);
     const sentTo = [];
@@ -131,6 +146,36 @@ async function broadcastGroupUpdate({
   }
 }
 
+async function sendInvite(groupId, groupName, walletAddress, code) {
+  try {
+    const { client, context } = await ensureGroupConversation(groupId, groupName);
+    const canMsg = await client.canMessage(walletAddress);
+    if (!canMsg) {
+      return { ok: false, reason: "wallet_unreachable" };
+    }
+    const convo = await client.conversations.newConversation(walletAddress, context);
+    await convo.send(
+      `You have been invited to join rent group "${groupName}". Invite code: ${code}. Accept in-app to join.`
+    );
+    return { ok: true };
+  } catch (err) {
+    console.error("XMTP invite send error", err);
+    return { ok: false, reason: err?.message || "invite_failed" };
+  }
+}
+
+async function announceJoin(groupId, groupName, label) {
+  await broadcastGroupUpdate({
+    groupId,
+    groupName,
+    memberWallets: xmtpGroups[groupId]?.members || [],
+    text: `👤 ${label} has joined the rent group.`,
+  });
+}
+
 module.exports = {
   broadcastGroupUpdate,
+  ensureGroupConversation,
+  sendInvite,
+  announceJoin,
 };
